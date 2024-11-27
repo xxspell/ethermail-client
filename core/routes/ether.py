@@ -1,22 +1,23 @@
 import asyncio
+import random
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter
 from fake_useragent import UserAgent
 from fastapi import FastAPI, Depends, HTTPException
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.api_client import EthermailAPI
 from core.database.connect import get_db
 from core.database.models import EtherMailAccount
 from core.dependencies import verify_api_key
+from core.ip import validate_proxy
 from core.schemas import TaskResponse, CreateMultipleAccountsRequest, CreateSingleAccountRequest, TaskStatusResponse, \
-    AccountResponse, EmailSearchResponse, EmailSearchRequest
+    AccountResponse, EmailSearchResponse, EmailSearchRequest, UpdateProxiesRequest
 
 from core.task_manager import TaskManager, TaskStatus
-
 
 task_manager = TaskManager()
 ETHERMAIL_DOMAIN = "ethermail.io"
@@ -24,7 +25,9 @@ ether_router = APIRouter()
 
 async def register_account(proxy: str, db: AsyncSession):
     try:
-        ua = UserAgent()
+        ua = UserAgent(browsers=["chrome", "edge", "firefox", "safari"],
+                       os=["windows", "macos", "linux"],
+                       platforms=["pc"])
         user_agent = ua.random
         api_client = EthermailAPI(proxy=proxy, user_agent=user_agent)
 
@@ -34,9 +37,10 @@ async def register_account(proxy: str, db: AsyncSession):
 
         token = await api_client.register(address.lower(), private_key, nonce)
 
+        await api_client.set_auth_token(token, None, db)
         communities_ids = await api_client.get_communities_ids()
 
-        if not await api_client.onboarding(communities_ids=communities_ids):
+        if not await api_client.onboarding(communities_ids=random.sample(communities_ids, k=3)):
             logger.info("Error onboarding")
 
         logger.info("Register suc")
@@ -72,19 +76,27 @@ async def process_registration_task(task_id: str, db: AsyncSession):
 
     task.status = TaskStatus.IN_PROGRESS
 
-    async def register_with_proxy(proxy: str):
-        try:
-            result = await register_account(proxy, db)
-            task.completed_count += 1
-            task.results.append(result)
-        except Exception as e:
-            task.failed_count += 1
-            task.errors.append(str(e))
+    semaphore = asyncio.Semaphore(10)
+
+    async def register_with_proxy(proxy: str, number_task: int, delay_sec: int):
+        async with semaphore:
+            try:
+                await asyncio.sleep(delay_sec / 0.9)
+                result = await register_account(proxy, db)
+                task.completed_count += 1
+                task.results.append(result)
+            except Exception as e:
+                task.failed_count += 1
+                task.errors.append(str(e))
 
     tasks = []
+
+    proxies_for_reg = task.proxies
+    random.shuffle(proxies_for_reg)
+
     for i in range(task.count):
-        if i < len(task.proxies):
-            tasks.append(register_with_proxy(task.proxies[i]))
+        if i < len(proxies_for_reg):
+            tasks.append(register_with_proxy(proxies_for_reg[i], i, task.delay_sec))
 
     await asyncio.gather(*tasks)
     task.status = TaskStatus.COMPLETED
@@ -107,7 +119,7 @@ async def create_accounts(
     if request.count > len(request.proxies):
         raise HTTPException(status_code=400, detail="Not enough proxies for requested account count")
 
-    task_id = task_manager.create_task(request.proxies, request.count)
+    task_id = task_manager.create_task(request.proxies, request.count, request.delay_sec)
     asyncio.create_task(process_registration_task(task_id, db))
 
     return TaskResponse(task_id=task_id)
@@ -198,7 +210,7 @@ async def get_emails(
 ):
     try:
         result = await db.execute(
-            select(EtherMailAccount).filter(EtherMailAccount.email == request.address)
+            select(EtherMailAccount).filter(func.lower(EtherMailAccount.email) == request.address.lower())
         )
         account = result.scalar_one_or_none()
 
@@ -227,3 +239,49 @@ async def get_emails(
     except Exception as e:
         logger.error(f"Error getting emails: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@ether_router.post(
+    "/update_proxies",
+    response_model=List[AccountResponse],
+    summary="Update proxies for accounts",
+    description="Replace existing proxies on accounts with provided proxies, with optional validation",
+    dependencies=[Depends(verify_api_key)]
+)
+async def update_proxies(
+        request: UpdateProxiesRequest,
+        db: AsyncSession = Depends(get_db)
+):
+    if not request.proxies:
+        raise HTTPException(status_code=400, detail="No proxies provided")
+
+
+    result = await db.execute(select(EtherMailAccount))
+    accounts = result.scalars().all()
+
+    if len(accounts) == 0:
+        raise HTTPException(status_code=404, detail="No accounts found")
+
+
+    if len(request.proxies) < len(accounts):
+        raise HTTPException(status_code=400, detail="Not enough proxies for the accounts")
+
+
+    valid_proxies = []
+    for proxy in request.proxies:
+        if request.validate:
+            if await validate_proxy(proxy):
+                valid_proxies.append(proxy)
+        else:
+            valid_proxies.append(proxy)
+
+    if len(valid_proxies) < len(accounts):
+        raise HTTPException(status_code=400, detail="Not enough valid proxies for the accounts")
+
+    for i, account in enumerate(accounts):
+        account.proxy = valid_proxies[i]
+        account.last_used = datetime.utcnow()
+
+    await db.commit()
+
+    return [AccountResponse.from_orm(account) for account in accounts]

@@ -3,20 +3,25 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
 from datetime import datetime
 
+
 class CreateSingleAccountRequest(BaseModel):
     proxy: str = Field(..., description="Proxy in format socks5://user:pass@host:port")
+
 
 class CreateMultipleAccountsRequest(BaseModel):
     proxies: List[str] = Field(..., description="List of proxies, one per line")
     count: int = Field(..., gt=0, description="Number of accounts to create")
 
+
 class TaskResponse(BaseModel):
     task_id: str = Field(..., description="Unique task identifier")
+
 
 class AccountResult(BaseModel):
     id: int = Field(..., description="Account ID in database")
     wallet_address: str = Field(..., description="Ethereum wallet address")
     token: str = Field(..., description="JWT token")
+
 
 class TaskStatusResponse(BaseModel):
     status: str = Field(..., description="Current task status (pending/in_progress/completed/failed)")
@@ -28,6 +33,7 @@ class TaskStatusResponse(BaseModel):
     results: Optional[List[AccountResult]] = Field(None, description="List of created accounts (only when completed)")
     errors: Optional[List[str]] = Field(None, description="List of errors (only when there are failures)")
 
+
 class AccountResponse(BaseModel):
     id: int
     wallet_address: str
@@ -37,7 +43,6 @@ class AccountResponse(BaseModel):
     user_agent: Optional[str]
 
     class Config:
-        orm_mode = True
         from_attributes = True
 
 
@@ -50,11 +55,13 @@ class EmailMessage(BaseModel):
     text: Optional[str] = Field(None, description="Plain text content")
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
+
 
 class EmailSearchResponse(BaseModel):
     total: int = Field(..., description="Total number of messages found")
     messages: List[EmailMessage] = Field(..., description="List of messages")
+
 
 class EmailSearchRequest(BaseModel):
     address: str = Field(..., description="Email address to search for")
@@ -86,3 +93,9 @@ class ServiceStatus(BaseModel):
     stats: ServiceStats = Field(..., description="Service statistics")
     system_info: SystemInfo = Field(..., description="System information")
     dependencies: Dict[str, str] = Field(..., description="External dependencies status")
+
+
+class UpdateProxiesRequest(BaseModel):
+    proxies: List[str] = Field(..., description="List of new proxies to replace existing ones")
+    validate: Optional[bool] = Field(False,
+                                     description="Flag to indicate if proxies should be validated before updating")

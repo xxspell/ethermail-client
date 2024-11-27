@@ -13,9 +13,10 @@ class TaskStatus(Enum):
 
 
 class RegistrationTask:
-    def __init__(self, proxies: List[str], count: int = 1):
+    def __init__(self, proxies: List[str], count: int = 1, delay_sec: int = 5):
         self.proxies = proxies
         self.count = count
+        self.delay_sec = delay_sec
         self.status = TaskStatus.PENDING
         self.created_at = datetime.utcnow()
         self.completed_count = 0
@@ -29,7 +30,7 @@ class TaskManager:
         self.tasks: Dict[str, RegistrationTask] = {}
         self._task_counter = 0
 
-    def create_task(self, proxies: List[str], count: int = 1) -> str:
+    def create_task(self, proxies: List[str], count: int = 1, delay_sec: int = 5) -> str:
         self._task_counter += 1
         task_id = f"task_{self._task_counter}"
         self.tasks[task_id] = RegistrationTask(proxies, count)

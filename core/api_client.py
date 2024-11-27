@@ -17,12 +17,14 @@ from tenacity import (
     before_sleep_log
 )
 from web3 import Web3
+from browserforge.headers import HeaderGenerator
 
 from core.database.models import EtherMailAccount
 from core.logging_config import logger, before_sleep_log_loguru
 
 w3 = Web3()
 
+headers = HeaderGenerator()
 
 class ProxyError(Exception):
     pass
@@ -58,26 +60,28 @@ class EthermailAPI:
             proxy_type: Literal["http", "socks5"] = "socks5",
             user_agent: Optional[str] = None
     ):
-        self.headers = {
-            'accept': 'application/json',
-            'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-            'cache-control': 'no-cache',
-            'content-type': 'application/json',
-            'cookie': '',
-            'origin': 'https://ethermail.io',
-            'pragma': 'no-cache',
-            'priority': 'u=1, i',
-            'referer': 'https://ethermail.io/accounts/login?redirect=%252Fwebmail',
-            'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sec-gpc': '1',
-            'user-agent': user_agent if isinstance(user_agent,
-                                                   str) else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-        }
+        try:
+            self.headers = headers.generate(user_agent=user_agent if isinstance(user_agent, str) else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+        except:
+            self.headers = {
+                'accept': 'application/json',
+                'accept-language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'cache-control': 'no-cache',
+                'content-type': 'application/json',
+                'cookie': '',
+                'origin': 'https://ethermail.io',
+                'pragma': 'no-cache',
+                'priority': 'u=1, i',
+                'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'same-origin',
+                'sec-gpc': '1',
+                'user-agent': user_agent if isinstance(user_agent,
+                                                       str) else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+            }
         self.base_url = "https://ethermail.io/api"
         self.timeout = httpx.Timeout(30.0)
 
@@ -89,34 +93,35 @@ class EthermailAPI:
     async def set_auth_token(self, token: str, account: EtherMailAccount, db: AsyncSession) -> None:
         """Set auth token with expiration check and auto-refresh if needed"""
         try:
-            decoded = jwt.decode(token, options={"verify_signature": False})
-            exp_timestamp = decoded.get('exp')
+            if account:
+                decoded = jwt.decode(token, options={"verify_signature": False})
+                exp_timestamp = decoded.get('exp')
 
-            if not exp_timestamp:
-                raise Exception("Invalid token format: no expiration time")
+                if not exp_timestamp:
+                    raise Exception("Invalid token format: no expiration time")
 
 
-            exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-            time_left = exp_time - datetime.now(timezone.utc)
+                exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+                time_left = exp_time - datetime.now(timezone.utc)
 
-            # If there is less than an hour left, update the token
-            if time_left.total_seconds() < 3600:
-                logger.info("Token expires soon, refreshing...")
+                # If there is less than an hour left, update the token
+                if time_left.total_seconds() < 3600:
+                    logger.info("Token expires soon, refreshing...")
 
-                _, nonce = await self.get_nonce(account.wallet_address.lower())
+                    _, nonce = await self.get_nonce(account.wallet_address.lower())
 
-                new_token = await self.register(
-                    account.wallet_address.lower(),
-                    account.private_key,
-                    nonce
-                )
+                    new_token = await self.register(
+                        account.wallet_address.lower(),
+                        account.private_key,
+                        nonce
+                    )
 
-                account.jwt_token = new_token
-                account.last_used = datetime.utcnow()
-                db.add(account)
-                await db.commit()
+                    account.jwt_token = new_token
+                    account.last_used = datetime.utcnow()
+                    db.add(account)
+                    await db.commit()
 
-                token = new_token
+                    token = new_token
 
             self.headers['cookie'] = f"token={token};"
 
